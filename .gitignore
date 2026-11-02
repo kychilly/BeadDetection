@@ -1,0 +1,17 @@
+# Videos
+*.wmv
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Processed videos
+ProcessedVideos/
+
+# Python
+__pycache__/
+.venv/
+venv/
+
+# IDE
+.idea/

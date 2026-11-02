@@ -1,0 +1,20 @@
+[33m449a54b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m code(no videos
+ VideoFiles/video1.wmv  | Bin [31m55133282[m -> [32m0[m bytes
+ VideoFiles/video10.wmv | Bin [31m50773354[m -> [32m0[m bytes
+ VideoFiles/video11.wmv | Bin [31m18117162[m -> [32m0[m bytes
+ VideoFiles/video12.wmv | Bin [31m27997216[m -> [32m0[m bytes
+ VideoFiles/video13.wmv | Bin [31m16213156[m -> [32m0[m bytes
+ VideoFiles/video14.wmv | Bin [31m33045246[m -> [32m0[m bytes
+ VideoFiles/video15.wmv | Bin [31m97317564[m -> [32m0[m bytes
+ VideoFiles/video2.wmv  | Bin [31m22901156[m -> [32m0[m bytes
+ VideoFiles/video3.wmv  | Bin [31m54341282[m -> [32m0[m bytes
+ VideoFiles/video4.wmv  | Bin [31m53509282[m -> [32m0[m bytes
+ VideoFiles/video5.wmv  | Bin [31m118869570[m -> [32m0[m bytes
+ VideoFiles/video6.wmv  | Bin [31m72837372[m -> [32m0[m bytes
+ VideoFiles/video7.wmv  | Bin [31m163221768[m -> [32m0[m bytes
+ VideoFiles/video8.wmv  | Bin [31m56061306[m -> [32m0[m bytes
+ VideoFiles/video9.wmv  | Bin [31m34869258[m -> [32m0[m bytes
+ 15 files changed, 0 insertions(+), 0 deletions(-)
+[33m03d89f8[m videos (no processed or files cause too large
+ .gitignore | 3 [32m++[m[31m-[m
+ 1 file changed, 2 insertions(+), 1 deletion(-)
