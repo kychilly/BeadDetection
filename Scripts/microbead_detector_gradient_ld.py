@@ -1,33 +1,30 @@
-# !/usr/bin/env python3
+#!/usr/bin/env python3
 """
-microbead_detector.py
+microbead_detector_gradient_ld.py
 
 Detects microbeads in videos with an approximation of NI Vision's
 "IMAQ Match Pattern 4" and writes copies of each video with a red circle
 drawn on the detected beads.
 
+This version runs ONLY:
+    - GradientPyramid
+    - LowDiscrepancy
+and ONLY on video1, video2 and video3.
+
 Expected layout (next to this script, or pass --base-dir):
-    VideoFiles/       video1.mp4, video2.mp4, ...   (any count, any common extension)
+    VideoFiles/       video1.mp4, video2.mp4, video3.mp4, ...
     TemplateImages/   template1.png, template2.png, template3.png
-    ProcessedVideos/  created automatically
+
+Output folders (created automatically if missing):
+    ProcessedGrayscalePyramid/          GradientPyramid runs
+    ProcessedLowDiscrepancySampling/    LowDiscrepancy runs
 
 For every video, every algorithm and every min match score (500..900 step 25)
-one output file is written:
-    ProcessedVideos/video1_MinScore500_GrayscalePyramid_LDContrastSubpixel.mp4
+one output file is written, e.g.:
+    ProcessedLowDiscrepancySampling/video1_MinScore500_LowDiscrepancy_LDContrastSubpixel.mp4
 
 Outputs that already exist are skipped, so the program can be stopped and
 restarted at any time.
-
-Algorithms
-    LowDiscrepancy    Template is sampled at a low-discrepancy (Halton) point set.
-                      A sparse correlation search finds candidates, which are then
-                      refined with full correlation.
-    GrayscalePyramid  Coarse-to-fine normalized correlation on a grayscale pyramid.
-    GradientPyramid   Same, on a gradient-magnitude pyramid.
-
-Advanced option "LDContrastSubpixel"
-    Enables subpixel peak refinement for every algorithm and rejects
-    low-contrast windows in the low-discrepancy search.
 
 Dependencies:  pip install opencv-python numpy
 """
@@ -48,18 +45,25 @@ import numpy as np
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-VIDEO_DIR_NAME = "VideoFiles"
-TEMPLATE_DIR_NAME = "TemplateImages"
-OUTPUT_DIR_NAME = "ProcessedVideos"
+VIDEO_DIR_NAME = "../VideoFiles"
+TEMPLATE_DIR_NAME = "../TemplateImages"
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v")
 TEMPLATE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+VIDEO_NUMBERS = (1, 2, 3)  # only video1, video2, video3 are processed
+
+# Output folder for each algorithm (created if missing)
+OUTPUT_DIR_NAMES = {
+    "GradientPyramid": "ProcessedGrayscalePyramid",
+    "LowDiscrepancy": "ProcessedLowDiscrepancySampling",
+}
 
 NUM_MATCHES = 2  # beads requested; if more, the farthest apart are kept
 MIN_SCORES = list(range(500, 901, 25))  # 500, 525, ... 900 (scale 1-1000)
 ANGLE_RANGE = (0, 0)  # degrees (min, max); (0, 0) = no rotation search
 ANGLE_STEP = 5
 
-ALGORITHMS = ["GrayscalePyramid"]  # also available: "LowDiscrepancy", "GradientPyramid"
+ALGORITHMS = ["GradientPyramid", "LowDiscrepancy"]
 ADVANCED_OPTIONS = ["LDContrastSubpixel"]
 
 MIN_SEPARATION_FRACTION = 0.5  # min distance between matches, as a fraction of the template size
@@ -351,12 +355,7 @@ def detect(frame_bgr, algo, variants, floor, subpixel, min_sep):
     fine_thr = floor
     cands = []
 
-    if algo == "GrayscalePyramid":
-        fp = FramePyramid(gray)
-        thr = max(0.0, floor - PYRAMID_COARSE_MARGIN)
-        for v in variants:
-            cands += pyramid_search(fp, v.gray, v, fine_thr, thr, subpixel)
-    elif algo == "GradientPyramid":
+    if algo == "GradientPyramid":
         fp = FramePyramid(gradient_mag(gray))
         thr = max(0.0, floor - PYRAMID_COARSE_MARGIN)
         for v in variants:
@@ -407,8 +406,9 @@ def draw_bead(img, m):
 # =============================================================================
 # FILE HANDLING
 # =============================================================================
-def find_numbered_files(folder, prefix, extensions):
-    """prefix1.ext, prefix2.ext, ... in numeric order. Gaps and extras are fine."""
+def find_numbered_files(folder, prefix, extensions, only_numbers=None):
+    """prefix1.ext, prefix2.ext, ... in numeric order. Gaps and extras are fine.
+    If only_numbers is given, only those numbers are returned."""
     pat = re.compile(rf"^{prefix}(\d+)$", re.IGNORECASE)
     found = {}
     for name in os.listdir(folder):
@@ -417,7 +417,10 @@ def find_numbered_files(folder, prefix, extensions):
             continue
         m = pat.match(stem)
         if m:
-            found.setdefault(int(m.group(1)), Path(folder) / name)
+            num = int(m.group(1))
+            if only_numbers is not None and num not in only_numbers:
+                continue
+            found.setdefault(num, Path(folder) / name)
     return [found[k] for k in sorted(found)]
 
 
@@ -458,7 +461,8 @@ def process_video(video_path, algo, adv, variants, out_dir, min_sep):
     frames = 0
     t0 = time.time()
 
-    print(f"  [run ] {stem} / {algo} / {adv}: {len(todo)} of {len(MIN_SCORES)} outputs to make")
+    print(f"  [run ] {stem} / {algo} / {adv}: {len(todo)} of {len(MIN_SCORES)} outputs to make"
+          f"  -> {out_dir.name}")
     try:
         while True:
             ok, frame = cap.read()
@@ -524,7 +528,8 @@ def process_video(video_path, algo, adv, variants, out_dir, min_sep):
 # MAIN
 # =============================================================================
 def main():
-    ap = argparse.ArgumentParser(description="Microbead detection on video files")
+    ap = argparse.ArgumentParser(
+        description="Microbead detection (GradientPyramid + LowDiscrepancy) on videos 1-3")
     ap.add_argument("--base-dir", default=str(Path(__file__).resolve().parent),
                     help="Folder containing VideoFiles and TemplateImages "
                          "(default: this script's folder)")
@@ -533,15 +538,18 @@ def main():
     base = Path(args.base_dir)
     video_dir = base / VIDEO_DIR_NAME
     template_dir = base / TEMPLATE_DIR_NAME
-    out_dir = base / OUTPUT_DIR_NAME
 
     for d, label in ((video_dir, VIDEO_DIR_NAME), (template_dir, TEMPLATE_DIR_NAME)):
         if not d.is_dir():
             sys.exit(f"Folder not found: {d}  ({label} must be in {base})")
-    out_dir.mkdir(exist_ok=True)
 
-    for stale in out_dir.glob("*.partial.mp4"):  # left over from an interrupted run
-        remove_quietly(stale)
+    # ---- output folders (created if missing) ----
+    out_dirs = {}
+    for algo in ALGORITHMS:
+        out_dirs[algo] = base / OUTPUT_DIR_NAMES[algo]
+        out_dirs[algo].mkdir(parents=True, exist_ok=True)
+        for stale in out_dirs[algo].glob("*.partial.mp4"):  # from an interrupted run
+            remove_quietly(stale)
 
     # ---- templates ----
     if ANGLE_RANGE[0] == ANGLE_RANGE[1] or ANGLE_STEP <= 0:
@@ -563,11 +571,19 @@ def main():
         sys.exit(f"No usable templates (template1, template2, ...) in {template_dir}")
     min_sep = max(2.0, MIN_SEPARATION_FRACTION * min(sizes))
 
-    # ---- videos ----
-    videos = find_numbered_files(video_dir, "video", VIDEO_EXTENSIONS)
+    # ---- videos (only video1, video2, video3) ----
+    videos = find_numbered_files(video_dir, "video", VIDEO_EXTENSIONS,
+                                 only_numbers=VIDEO_NUMBERS)
+    found_nums = {int(re.search(r"(\d+)$", v.stem).group(1)) for v in videos}
+    for n in VIDEO_NUMBERS:
+        if n not in found_nums:
+            print(f"[warn] video{n} not found in {video_dir}")
     if not videos:
-        sys.exit(f"No videos (video1, video2, ...) found in {video_dir}")
-    print(f"Found {len(videos)} video(s). Output folder: {out_dir}\n")
+        sys.exit(f"None of video{', video'.join(map(str, VIDEO_NUMBERS))} found in {video_dir}")
+    print(f"Found {len(videos)} video(s). Algorithms: {', '.join(ALGORITHMS)}")
+    for algo in ALGORITHMS:
+        print(f"  {algo} -> {out_dirs[algo]}")
+    print()
 
     t_start = time.time()
     try:
@@ -576,7 +592,7 @@ def main():
             for algo in ALGORITHMS:
                 for adv in ADVANCED_OPTIONS:
                     try:
-                        process_video(vp, algo, adv, variants, out_dir, min_sep)
+                        process_video(vp, algo, adv, variants, out_dirs[algo], min_sep)
                     except Exception as exc:  # one bad video/pass must not stop the run
                         print(f"  [error] {vp.name} / {algo}: {exc}")
                     gc.collect()
