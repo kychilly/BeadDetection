@@ -7,8 +7,9 @@ def main():
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent  # BeadDetection root folder
 
-    video_path = root_dir / "video1Copy.mp4"
-    output_dir = root_dir / "video1trim"
+    # video_path = root_dir / "video1Copy.mp4"
+    video_path = root_dir / "video2TrimmedCopy.mp4"
+    output_dir = root_dir / "video2Trim"
 
     if not video_path.exists():
         print(f"[Error] Could not find video at: {video_path}")
