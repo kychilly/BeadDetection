@@ -16,6 +16,15 @@ on them:
                       it stays red while it is tracked (also after it gets
                       trapped and stops moving).
 
+TIMING (new):
+    * The processing time of every frame (in ms) is written in the bottom-right
+      corner of each output video.
+    * That time is for ONE run of the algorithm on that frame - it is NOT the
+      sum over the different min-score outputs. (The template search is done
+      once per frame and shared by all min-score videos, so the number is the
+      same in all of them, see TIMING_INCLUDES_TRACKING below.)
+    * The average ms/frame of every video is printed in the terminal.
+
 How a potential bead is found (motion detector, every frame):
     * each frame is high-pass filtered (removes the slow brightness gradient)
     * a "background" is built as the median of the previous ~8 frames
@@ -68,7 +77,7 @@ VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v")
 TEMPLATE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
 NUM_MATCHES = 2  # red beads drawn per frame; if more, the farthest apart are kept
-MIN_SCORES = list(range(300, 701, 25))  # 300, 325, ... 700 (scale 1-1000)
+MIN_SCORES = list(range(300, 500, 25))  # 300, 325, ... 700 (scale 1-1000)
 ANGLE_RANGE = (0, 0)  # degrees (min, max); (0, 0) = no rotation search
 ANGLE_STEP = 5
 
@@ -79,6 +88,16 @@ MIN_SEPARATION_FRACTION = 0.5  # min distance between matches, as a fraction of 
 MAX_CANDIDATES = 20  # template candidates kept per frame
 PEAKS_PER_TEMPLATE = 8  # coarse peaks refined per template and frame
 PYRAMID_COARSE_MARGIN = 0.15  # coarse-stage threshold = lowest min score - margin
+
+# ---- per-frame timing overlay ----
+SHOW_TIMING = True              # draw "xx.x ms" in the bottom-right corner of every frame
+TIMING_INCLUDES_TRACKING = False  # False = time of the template match (IMAQ Match Pattern 4
+                                  #         replica) alone, identical in every min-score video.
+                                  # True  = also add the motion detector + the tracking of that
+                                  #         min score for that frame (differs a little per score)
+TIMING_FONT_SCALE = 0.8         # text size for a 720 px high video (scales with the video height)
+TIMING_TEXT_COLOR = (255, 255, 255)  # BGR
+TIMING_BG_COLOR = (0, 0, 0)          # BGR box behind the text
 
 # ---- motion detector (potential beads, found from the very first frame) ----
 MOTION_SCALE = 0.5          # motion analysis runs on a half-size image (speed)
@@ -418,24 +437,30 @@ def nearest_track(tracks, used, m, f, limit):
 
 
 def find_beads(tmpl_cands, motion_cands, min_score, fps):
-    """Returns out[f] = list of (Match, confirmed) to draw in frame f for this min score.
+    """Returns (out, track_ms) for this min score.
 
-    confirmed False -> orange potential bead, True -> red bead.
+    out[f]      = list of (Match, confirmed) to draw in frame f
+                  (confirmed False -> orange potential bead, True -> red bead)
+    track_ms[f] = time (ms) the tracking of frame f took for this min score
     """
     n_conf = max(2, int(round(CONFIRM_SECONDS * fps)))
     max_gap = max(1, int(round(MAX_GAP_SECONDS * fps)))
     anchor_frames = max(2, int(round(STATIC_SECONDS * fps)))
     anchor_score = max(min_score, ANCHOR_MIN_SCORE)
     out = [[] for _ in tmpl_cands]
+    track_ms = [0.0] * len(tmpl_cands)
 
     if not MOTION_FILTER:
         for f, cands in enumerate(tmpl_cands):
+            t_f = time.perf_counter()
             out[f] = [(m, True) for m in cands if m.score >= min_score]
-        return out
+            track_ms[f] = (time.perf_counter() - t_f) * 1000.0
+        return out, track_ms
 
     tracks = []   # {"obs": [(frame, Match)], "start": f, "last": f, "bead": bool}
     statics = []  # {"x", "y", "n", "last"}: template matches that do not move
     for f in range(len(tmpl_cands)):
+        t_f = time.perf_counter()
         tracks = [t for t in tracks if f - t["last"] <= max_gap]
         statics = [s for s in statics if f - s["last"] <= 2]
         used = set()
@@ -505,7 +530,8 @@ def find_beads(tmpl_cands, motion_cands, min_score, fps):
             hold = f - tr["last"]
             if tr["bead"] or hold <= POTENTIAL_HOLD_FRAMES:
                 out[f].append((tr["obs"][-1][1], tr["bead"]))
-    return out
+        track_ms[f] = (time.perf_counter() - t_f) * 1000.0
+    return out, track_ms
 
 
 # =============================================================================
@@ -539,6 +565,22 @@ def draw_circle(img, m, color):
     f = 1 << SHIFT
     cv2.circle(img, (int(round(m.cx * f)), int(round(m.cy * f))), int(round(r * f)),
                color, CIRCLE_THICKNESS, cv2.LINE_AA, SHIFT)
+
+
+def draw_timing(img, ms):
+    """Writes 'xx.x ms' in the bottom-right corner (on a small solid box)."""
+    h, w = img.shape[:2]
+    text = f"{ms:.1f} ms"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.5, TIMING_FONT_SCALE * h / 720.0)
+    thick = max(1, int(round(scale * 2)))
+    (tw, th), base = cv2.getTextSize(text, font, scale, thick)
+    pad = int(round(6 * scale)) + 2
+    x1, y1 = w - 1, h - 1
+    x0, y0 = max(0, x1 - tw - 2 * pad), max(0, y1 - th - base - 2 * pad)
+    cv2.rectangle(img, (x0, y0), (x1, y1), TIMING_BG_COLOR, -1)
+    cv2.putText(img, text, (x0 + pad, y1 - pad - base), font, scale,
+                TIMING_TEXT_COLOR, thick, cv2.LINE_AA)
 
 
 def frame_overlay(entries):
@@ -578,13 +620,19 @@ def remove_quietly(path):
 
 def detect_all(video_path, variants, floor, subpixel, min_sep, max_frames):
     """PASS 1: template candidates and motion blobs for every frame.
-    Returns (tmpl_per_frame, motion_per_frame, fps)."""
+
+    Also measures, per frame, the time (ms) of the template match
+    (detect_templates only - no video decoding, no drawing) and of the motion
+    detector.
+
+    Returns (tmpl_per_frame, motion_per_frame, fps, tmpl_ms, motion_ms)."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return None, None, 30.0
+        return None, None, 30.0, None, None
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     tmpl_pf, motion_pf = [], []
+    tmpl_ms, motion_ms = [], []
     motion = MotionDetector()
     t0 = time.time()
     try:
@@ -593,8 +641,15 @@ def detect_all(video_path, variants, floor, subpixel, min_sep, max_frames):
             if not ok:
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            t = time.perf_counter()
             motion_pf.append(motion.update(gray))
+            motion_ms.append((time.perf_counter() - t) * 1000.0)
+
+            t = time.perf_counter()
             tmpl_pf.append(detect_templates(gray, variants, floor, subpixel, min_sep))
+            tmpl_ms.append((time.perf_counter() - t) * 1000.0)
+
             n = len(tmpl_pf)
             if n % 25 == 0:
                 tot = f"/{total}" if total else ""
@@ -602,11 +657,13 @@ def detect_all(video_path, variants, floor, subpixel, min_sep, max_frames):
                       end="\r", flush=True)
     finally:
         cap.release()
-    return tmpl_pf, motion_pf, fps
+    return tmpl_pf, motion_pf, fps, tmpl_ms, motion_ms
 
 
 def process_video(video_path, algo, adv, variants, out_dir, min_sep, scores, max_frames=0):
-    """One detection pass + one tracking pass; writes every missing min-score output."""
+    """One detection pass + one tracking pass; writes every missing min-score output.
+
+    Returns the average processing time per frame in ms (None if nothing was run)."""
     stem = video_path.stem
     todo = {}
     for s in scores:
@@ -615,29 +672,50 @@ def process_video(video_path, algo, adv, variants, out_dir, min_sep, scores, max
             todo[s] = final
     if not todo:
         print(f"  [skip] {stem} / {algo} / {adv}: all outputs already exist")
-        return
+        return None
 
     floor = min(MIN_SCORES) / 1000.0
     subpixel = (adv == "LDContrastSubpixel")
     t0 = time.time()
     print(f"  [run ] {stem} / {algo} / {adv}: {len(todo)} of {len(scores)} outputs to make")
 
-    tmpl_pf, motion_pf, fps = detect_all(video_path, variants, floor, subpixel, min_sep, max_frames)
+    tmpl_pf, motion_pf, fps, tmpl_ms, motion_ms = detect_all(
+        video_path, variants, floor, subpixel, min_sep, max_frames)
     if tmpl_pf is None:
         print(f"  [warn] could not open {video_path.name}, skipping")
-        return
+        return None
     if not tmpl_pf:
         print("  [warn] no frames could be read, skipping")
-        return
+        return None
 
     entries_by_score = {}
+    frame_ms_by_score = {}  # time (ms) of ONE run of the algorithm, per frame, per min score
     for s in todo:
-        ent = find_beads(tmpl_pf, motion_pf, s, fps)
+        ent, track_ms = find_beads(tmpl_pf, motion_pf, s, fps)
         entries_by_score[s] = ent
+        if TIMING_INCLUDES_TRACKING:
+            frame_ms_by_score[s] = [a + b + c for a, b, c in zip(tmpl_ms, motion_ms, track_ms)]
+        else:
+            frame_ms_by_score[s] = tmpl_ms
         first_o = next((f for f, e in enumerate(ent) if any(not ok for _, ok in e)), None)
         first_r = next((f for f, e in enumerate(ent) if any(ok for _, ok in e)), None)
         fmt = lambda f: "-" if f is None else f"frame {f} ({f / fps:.2f}s)"
         print(f"         min score {s}: first orange {fmt(first_o)}, first red {fmt(first_r)}")
+
+    # ---- timing summary (terminal) ----
+    n_fr = len(tmpl_ms)
+    what = ("template match + motion + tracking" if TIMING_INCLUDES_TRACKING
+            else "template match (Match Pattern replica)")
+    if TIMING_INCLUDES_TRACKING:
+        for s in todo:
+            v = frame_ms_by_score[s]
+            print(f"         [time] min score {s}: avg {sum(v) / n_fr:.2f} ms/frame "
+                  f"(min {min(v):.2f}, max {max(v):.2f})")
+        avg_ms = sum(sum(v) / n_fr for v in frame_ms_by_score.values()) / len(frame_ms_by_score)
+    else:
+        avg_ms = sum(tmpl_ms) / n_fr
+    print(f"  [time ] {stem}: average {avg_ms:.2f} ms/frame over {n_fr} frames "
+          f"[{what}]; min {min(tmpl_ms):.2f}, max {max(tmpl_ms):.2f} (template match)")
 
     cap = cv2.VideoCapture(str(video_path))
     writers = {}
@@ -663,16 +741,20 @@ def process_video(video_path, algo, adv, variants, out_dir, min_sep, scores, max
             drawn = {}  # identical selections share one annotated frame
             for s, (wr, _, _) in writers.items():
                 reds, oranges = frame_overlay(entries_by_score[s][frames])
+                ms = frame_ms_by_score[s][frames]
                 key = (tuple(sorted((round(m.cx, 1), round(m.cy, 1), m.w, m.h) for m in reds)),
-                       tuple(sorted((round(m.cx, 1), round(m.cy, 1), m.w, m.h) for m in oranges)))
+                       tuple(sorted((round(m.cx, 1), round(m.cy, 1), m.w, m.h) for m in oranges)),
+                       f"{ms:.1f}" if SHOW_TIMING else None)
                 img = drawn.get(key)
                 if img is None:
-                    if reds or oranges:
+                    if reds or oranges or SHOW_TIMING:
                         img = frame.copy()
                         for m in oranges:
                             draw_circle(img, m, ORANGE)
                         for m in reds:
                             draw_circle(img, m, RED)
+                        if SHOW_TIMING:
+                            draw_timing(img, ms)
                     else:
                         img = frame
                     drawn[key] = img
@@ -699,6 +781,7 @@ def process_video(video_path, algo, adv, variants, out_dir, min_sep, scores, max
     if ok_run:
         print(f"  [done] {stem} / {algo} / {adv}: {frames} frames in {time.time() - t0:.0f}s"
               + " " * 20)
+    return avg_ms
 
 
 # =============================================================================
@@ -756,14 +839,17 @@ def main():
 
     scores = args.scores or MIN_SCORES
     t_start = time.time()
+    avg_times = []  # (video name, algorithm, option, average ms/frame)
     try:
         for vp in videos:
             print(f"{vp.name}")
             for algo in ALGORITHMS:
                 for adv in ADVANCED_OPTIONS:
                     try:
-                        process_video(vp, algo, adv, variants, out_dir, min_sep, scores,
-                                      args.max_frames)
+                        avg = process_video(vp, algo, adv, variants, out_dir, min_sep, scores,
+                                            args.max_frames)
+                        if avg is not None:
+                            avg_times.append((vp.name, algo, adv, avg))
                     except Exception as exc:  # one bad video/pass must not stop the run
                         print(f"  [error] {vp.name} / {algo}: {exc}")
                     gc.collect()
@@ -771,6 +857,11 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped by user. Finished outputs are kept; rerun to continue.")
         return
+
+    if avg_times:
+        print("\nAverage processing time per frame:")
+        for name, algo, adv, avg in avg_times:
+            print(f"  {name:<30} {avg:8.2f} ms/frame   ({algo} / {adv})")
     print(f"\nAll done in {(time.time() - t_start) / 60:.1f} min.")
 
 
